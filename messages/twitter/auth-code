@@ -1,0 +1,15 @@
+Hello [username],
+
+Your authorization code is: [code]
+
+To log into the panel, go to https://bot.tipscoin.io.
+
+Please note that the authorization code is only valid for 24 hours.
+
+If you want to see all available commands, write "!help" in response.
+
+
+
+Best regards
+
+TipsCoin.io team

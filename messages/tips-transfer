@@ -1,0 +1,12 @@
+Hello [username]!
+
+User [from] just sent you [tips] Tips.
+
+To claim it, please go to https://bot.tipscoin.io and use the following authorization code:
+
+[code]
+
+This code is valid for 24 hours.
+
+
+You can use !help command to see all available commands.

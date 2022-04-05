@@ -1,0 +1,13 @@
+Hello [username]!
+
+If you write in comment please add mention u/tipscoinbot before following commands:
+
+!login - get authorization code and login instructions
+
+!register - same as !login
+
+!tip 100 Tips - send 100 Tips to entry author
+
+!tip u/xyz 100 Tips - send 100 Tips to "xyz" user
+
+!help - displays this message
