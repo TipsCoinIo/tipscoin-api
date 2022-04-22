@@ -69,8 +69,8 @@ class TokenAuthenticator extends AbstractAuthenticator
                     "HS256"
                 )
             );
-        } catch (\Exception $e) {
-            throw new \Exception("wrong token " . $e->getMessage());
+        } catch (\Throwable $e) {
+            throw new \Exception("wrong token ");
         }
 
         return new SelfValidatingPassport(

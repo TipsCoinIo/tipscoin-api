@@ -78,6 +78,8 @@ class RedditMessagesToBotCommand extends Command
                     break 2;
                 }
 
+                dump($message);
+
                 $mtb = new MessageToBot();
                 $mtb->setMessage($message["body"]);
                 $mtb->setProvider("reddit");

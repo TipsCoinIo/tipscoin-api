@@ -65,6 +65,17 @@ class WalletController extends AbstractController
         if ($request->request->has("address")) {
             $address = trim($request->request->get("address"));
             if ($validator->validate($address)) {
+                $t = new Transaction();
+                $t->setType("wallet_addr_set");
+                $t->setBalanceAfter($u->getBalance());
+                $t->setValue("0");
+                $t->setData([
+                    "old" => $u->getWalletAddress(),
+                    "new" => $address,
+                ]);
+                $t->setUser($u);
+                $this->entityManager->persist($t);
+
                 $u->setWalletAddress($address);
                 $this->entityManager->persist($u);
                 $this->entityManager->flush();
@@ -250,8 +261,17 @@ class WalletController extends AbstractController
         $u = $this->getUser();
 
         if ($u && $u->getWalletAddress()) {
+            $t = new Transaction();
+            $t->setType("wallet_addr_remove");
+            $t->setBalanceAfter($u->getBalance());
+            $t->setValue("0");
+            $t->setData(["old" => $u->getWalletAddress()]);
+            $t->setUser($u);
+            $this->entityManager->persist($t);
+
             $u->setWalletAddress(null);
             $this->entityManager->persist($u);
+
             $this->entityManager->flush();
         }
 

@@ -118,6 +118,34 @@ class AdminController extends AbstractController
     }
 
     /**
+     * @Route("/referral-users/{user}", methods={"POST"})
+     */
+    public function updateReferralUser($user, Request $request)
+    {
+        $user = $this->entityManager
+            ->getRepository(ReferralProgramUser::class)
+            ->find($user);
+
+        if ($request->request->getBoolean("_delete")) {
+            $this->entityManager->remove($user);
+            $this->entityManager->flush();
+            return $this->json([]);
+        }
+
+        if ($request->request->has("accepted")) {
+            $user->setAccepted($request->request->getBoolean("accepted"));
+        }
+        if ($request->request->has("banned")) {
+            $user->setBanned($request->request->getBoolean("banned"));
+        }
+
+        $this->entityManager->persist($user);
+        $this->entityManager->flush();
+
+        return $this->json($this->mapReferralUser($user));
+    }
+
+    /**
      * @Route("/referral-users", methods={"POST"})
      */
     public function createReferralUser(
@@ -170,6 +198,9 @@ class AdminController extends AbstractController
             "id" => $user->getId(),
             "username" => $user->getUsername(),
             "privateHash" => $user->getPrivateHash(),
+            "accepted" => $user->getAccepted(),
+            "banned" => $user->getBanned(),
+            "email" => $user->getEmail(),
             "customLevels" => $user
                 ->getCustomLevels()
                 ->map(function (ReferralProgramRewardLevel $level) {

@@ -220,7 +220,11 @@ class AuthController extends AbstractController
                     "https://oauth.reddit.com/api/v1/me"
                 );
                 if (!empty($res["name"])) {
-                    if ($res["name"] === "tipscoinbot") {
+                    if (
+                        $res["name"] === "tipscoinbot" &&
+                        !empty($token["scope"]) &&
+                        strpos($token["scope"], "privatemessages") !== false
+                    ) {
                         $c = $this->entityManager
                             ->getRepository(Config::class)
                             ->findOneBy(["name" => "reddit_token"]);
@@ -352,6 +356,8 @@ class AuthController extends AbstractController
                 $um->$mname(null);
                 $balance = new Decimal($um->getBalance());
                 $um->setBalance("0");
+                $walletAddress = $um->getWalletAddress();
+                $um->setWalletAddress(null);
                 $this->entityManager->persist($um);
                 $this->entityManager->flush();
 
@@ -363,6 +369,9 @@ class AuthController extends AbstractController
                 $u->setBalance(
                     (new Decimal($u->getBalance()))->add($balance)->toString()
                 );
+                if ($walletAddress && !$u->getWalletAddress()) {
+                    $u->setWalletAddress($walletAddress);
+                }
                 $this->entityManager->persist($u);
                 $this->entityManager->flush();
 
@@ -419,7 +428,7 @@ class AuthController extends AbstractController
             }
         }
 
-        return $this->json(["message" => "unknown error"], 400);
+        return $this->json([]);
     }
 
     /**

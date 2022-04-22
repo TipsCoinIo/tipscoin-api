@@ -5,6 +5,7 @@ namespace App\Command;
 use App\Entity\MessageToBot;
 use App\Entity\TokenTx;
 use App\Service\Bot\Providers;
+use App\Service\Bot\UserRegisteredChecker;
 use App\Service\UserToken;
 use App\Service\WalletAddressValidator;
 use Decimal\Decimal;
@@ -114,8 +115,7 @@ class ProcessMessagesToBotCommand extends Command
     {
         $provider = $this->providers->providers[$messageToBot->getProvider()];
 
-        if(method_exists($provider,'setMessageToBot'))
-        {
+        if (method_exists($provider, "setMessageToBot")) {
             $provider->setMessageToBot($messageToBot);
         }
 
@@ -276,6 +276,17 @@ class ProcessMessagesToBotCommand extends Command
             }
 
             $sender = $provider->getSenderUser($messageToBot);
+
+            if ($provider instanceof UserRegisteredChecker) {
+                if (!$provider->isUserRegistered($sender)) {
+                    $provider->replyToMessage(
+                        $messageToBot,
+                        $provider->needRegistrationMessageBody()
+                    );
+                    return true;
+                }
+            }
+
             $senderUser = $provider->registerUser($sender);
 
             try {

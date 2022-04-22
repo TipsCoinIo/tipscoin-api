@@ -108,6 +108,8 @@ class ApController extends AbstractController
             $d[$c->getName()] = $c->getValue();
         }
 
+        $d["recaptcha"] = $this->getParameter("app:recaptcha_key");
+
         return $this->json($d);
     }
 }

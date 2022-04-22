@@ -4,6 +4,8 @@ namespace App\Controller\Telegram;
 
 use App\Entity\ReferralProgramJoinedUser;
 use App\Entity\ReferralProgramTelegramLink;
+use App\Entity\TelegramCaptcha;
+use App\Entity\TelegramWebhook;
 use App\Entity\Transaction;
 use App\Entity\User;
 use App\Entity\UserNotification;
@@ -15,11 +17,13 @@ use App\Service\UserToken;
 use Decimal\Decimal;
 use Doctrine\Common\Collections\ArrayCollection;
 use Doctrine\ORM\EntityManagerInterface;
+use Gregwar\Captcha\CaptchaBuilder;
 use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
 use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\HttpFoundation\Response;
 use Symfony\Component\HttpKernel\KernelInterface;
 use Symfony\Component\Routing\Annotation\Route;
+use Symfony\Component\String\ByteString;
 
 /**
  * @Route("/telegram", name="telegram_api_")
@@ -72,6 +76,43 @@ class BotController extends AbstractController
         $this->telegramClient = $telegramClient;
     }
 
+    public static function captchaPhrase()
+    {
+        return ByteString::fromRandom(
+            5,
+            "123456789ABCDEFGHJKMNPQRSTUVWXYZ"
+        )->toString();
+    }
+
+    /**
+     * @Route("/bot/captcha/{userId}.jpg", name="captcha_image")
+     */
+    public function captchaImage($userId, $return = false)
+    {
+        $tc = $this->entityManager
+            ->getRepository(TelegramCaptcha::class)
+            ->findOneBy(["telegramUserId" => $userId]);
+        if (!$tc) {
+            return new Response("", 404);
+        }
+
+        $builder = new CaptchaBuilder($tc->getPhrase());
+        $builder->setTextColor(255, 0, 106);
+        $builder->setMaxAngle(20);
+        $builder->setIgnoreAllEffects(true);
+        $builder->setBackgroundImages([
+            $this->kernel->getProjectDir() . "/assets/img/captcha.jpg",
+        ]);
+        $builder->build(400, 200);
+        if ($return) {
+            return $builder->get();
+        }
+
+        return new Response($builder->get(), 200, [
+            "Content-Type" => "image/jpeg",
+        ]);
+    }
+
     /**
      * @Route("/bot/{token}", name="bot")
      */
@@ -109,6 +150,27 @@ class BotController extends AbstractController
 
     public function processMessageToBot($data)
     {
+        $twh = new TelegramWebhook();
+        $twh->setData($data);
+        $this->entityManager->persist($twh);
+        $this->entityManager->flush();
+
+        $this->processCaptcha($data);
+
+        if (!empty($data["message"]["left_chat_member"]["id"])) {
+            $this->entityManager
+                ->getRepository(ReferralProgramJoinedUser::class)
+                ->createQueryBuilder("ru")
+                ->delete()
+                ->andWhere("ru.telegramId = :tid")
+                ->setParameter(
+                    "tid",
+                    $data["message"]["left_chat_member"]["id"]
+                )
+                ->getQuery()
+                ->execute();
+        }
+
         if (!empty($data["chat_member"]["invite_link"]["invite_link"])) {
             $from = $data["chat_member"]["from"];
 
@@ -144,6 +206,11 @@ class BotController extends AbstractController
 
         $message = $data["message"] ?? null;
         $callbackQuery = $data["callback_query"] ?? null;
+
+        if (!$message && !$callbackQuery) {
+            return;
+        }
+
         $chatId =
             $callbackQuery["message"]["chat"]["id"] ?? $message["chat"]["id"];
         $sender = $callbackQuery["from"] ?? $message["from"];
@@ -709,5 +776,271 @@ class BotController extends AbstractController
                 ],
             ];
         }
+    }
+
+    public function processCaptcha($data)
+    {
+        $chatId =
+            $data["message"]["chat"]["id"] ??
+            ($data["callback_query"]["message"]["chat"]["id"] ?? null);
+
+        if ($chatId != -1001711928517) {
+            return;
+        }
+
+        /** @var TelegramCaptcha[] $tcs */
+        $tcs = $this->entityManager
+            ->getRepository(TelegramCaptcha::class)
+            ->createQueryBuilder("tc")
+            ->andWhere("tc.createdAt < :dt")
+            ->setParameter("dt", new \DateTime("-1minutes"))
+            ->andWhere("tc.solved = 0")
+            ->getQuery()
+            ->getResult();
+
+        foreach ($tcs as $tc) {
+            foreach ($tc->getRelatedMessages() as $rm) {
+                try {
+                    $this->telegramClient->request("deleteMessage", [
+                        "chat_id" => $chatId,
+                        "message_id" => $rm,
+                    ]);
+                } catch (\Throwable $e) {
+                }
+            }
+
+            try {
+                $this->telegramClient->request("banChatMember", [
+                    "chat_id" => $chatId,
+                    "user_id" => $tc->getTelegramUserId(),
+                    "until_date" => time() + 60,
+                ]);
+            } catch (\Exception $e) {
+            }
+            $this->entityManager->remove($tc);
+            $this->entityManager->flush();
+        }
+
+        if (
+            !empty($data["callback_query"]["data"]) &&
+            !empty($data["callback_query"]["from"]["id"]) &&
+            preg_match(
+                '/^captcha_(\d+)_(.*?)$/',
+                $data["callback_query"]["data"],
+                $out
+            ) &&
+            $out[1] == $data["callback_query"]["from"]["id"]
+        ) {
+            $tc = $this->entityManager
+                ->getRepository(TelegramCaptcha::class)
+                ->findOneBy([
+                    "telegramUserId" => $data["callback_query"]["from"]["id"],
+                    "solved" => false,
+                ]);
+            if ($tc) {
+                foreach ($tc->getRelatedMessages() as $rm) {
+                    try {
+                        $this->telegramClient->request("deleteMessage", [
+                            "chat_id" => $chatId,
+                            "message_id" => $rm,
+                        ]);
+                    } catch (\Throwable $e) {
+                    }
+                }
+                $tc->setRelatedMessages([]);
+                $this->entityManager->persist($tc);
+                $this->entityManager->flush();
+
+                if ($out[2] === "new") {
+                    $this->captchaSendImage($tc->getTelegramUserId(), $chatId);
+                } else {
+                    if ($out[2] == $tc->getPhrase()) {
+                        $this->telegramClient->request("restrictChatMember", [
+                            "chat_id" => $chatId,
+                            "user_id" => $tc->getTelegramUserId(),
+                            "permissions" => ["can_send_messages" => true],
+                        ]);
+
+                        $tc->setSolved(true);
+                        $this->entityManager->persist($tc);
+                        $this->entityManager->flush();
+                    } else {
+                        $this->telegramClient->request("banChatMember", [
+                            "chat_id" => $chatId,
+                            "user_id" => $tc->getTelegramUserId(),
+                            "until_date" => time() + 60,
+                        ]);
+                        $this->entityManager->remove($tc);
+                        $this->entityManager->flush();
+                    }
+                }
+            }
+        }
+
+        if (!empty($data["message"]["new_chat_members"][0]["id"])) {
+            foreach ($data["message"]["new_chat_members"] as $user) {
+                try {
+                    $this->processCaptchaNewChatMember($user, $chatId);
+                } catch (\Throwable $t) {
+                }
+            }
+        }
+
+        if (!empty($data["message"]["left_chat_member"]["id"])) {
+            $tc = $this->entityManager
+                ->getRepository(TelegramCaptcha::class)
+                ->findOneBy([
+                    "telegramUserId" =>
+                        $data["message"]["left_chat_member"]["id"],
+                ]);
+            if ($tc) {
+                foreach ($tc->getRelatedMessages() as $rm) {
+                    try {
+                        $this->telegramClient->request("deleteMessage", [
+                            "chat_id" => $chatId,
+                            "message_id" => $rm,
+                        ]);
+                    } catch (\Throwable $e) {
+                    }
+                }
+                $this->entityManager->remove($tc);
+                $this->entityManager->flush();
+            }
+        }
+    }
+
+    public function processCaptchaNewChatMember($data, $chatId)
+    {
+        $needCaptcha =
+            $this->entityManager
+                ->getRepository(TelegramCaptcha::class)
+                ->findOneBy([
+                    "telegramUserId" => $data["id"],
+                    "solved" => true,
+                ]) === null;
+        if (!$needCaptcha) {
+            return;
+        }
+        $this->telegramClient->request("restrictChatMember", [
+            "chat_id" => $chatId,
+            "user_id" => $data["id"],
+            "permissions" => ["can_send_messages" => false],
+        ]);
+        $mention = $this->mentionPart($data);
+        $res = $this->telegramClient->request("sendMessage", [
+            "chat_id" => $chatId,
+            "text" =>
+                $mention["text"] .
+                " To unlock access to the group, please solve the captcha.",
+            "entities" => [$mention["entity"]],
+        ]);
+        $this->captchaSendImage($data["id"], $chatId, [
+            $res["result"]["message_id"],
+        ]);
+    }
+
+    public function captchaSendImage($userId, $chatId, $relatedMessages = [])
+    {
+        $phrase = self::captchaPhrase();
+
+        $tc = $this->entityManager
+            ->getRepository(TelegramCaptcha::class)
+            ->findOneBy(["telegramUserId" => $userId]);
+        if (!$tc) {
+            $tc = new TelegramCaptcha();
+            $tc->setTelegramUserId($userId);
+        }
+        $tc->setPhrase($phrase);
+        $tc->setSolved(false);
+        $tc->setCreatedAt(new \DateTime());
+        $this->entityManager->persist($tc);
+        $this->entityManager->flush();
+
+        foreach ($tc->getRelatedMessages() as $rm) {
+            try {
+                $this->telegramClient->request("deleteMessage", [
+                    "chat_id" => $chatId,
+                    "message_id" => $rm,
+                ]);
+            } catch (\Throwable $e) {
+            }
+        }
+        $tc->setRelatedMessages([]);
+        $this->entityManager->persist($tc);
+        $this->entityManager->flush();
+
+        $phrases = [
+            $phrase,
+            self::captchaPhrase(),
+            self::captchaPhrase(),
+            self::captchaPhrase(),
+            self::captchaPhrase(),
+            self::captchaPhrase(),
+        ];
+        shuffle($phrases);
+
+        $phrases = array_chunk($phrases, 3);
+
+        $kb = [];
+        foreach ($phrases as $phrase) {
+            $line = [];
+
+            foreach ($phrase as $p) {
+                $line[] = [
+                    "text" => $p,
+                    "callback_data" => "captcha_" . $userId . "_" . $p,
+                ];
+            }
+
+            $kb[] = $line;
+        }
+
+        $kb[] = [
+            [
+                "text" => "🔄 another image",
+                "callback_data" => "captcha_" . $userId . "_new",
+            ],
+        ];
+
+        try {
+            $tmp = tempnam(sys_get_temp_dir(), "a") . ".jpg";
+            file_put_contents($tmp, $this->captchaImage($userId, true));
+
+            $res = json_decode(
+                $this->telegramClient
+                    ->getClient()
+                    ->post("sendPhoto", [
+                        "multipart" => [
+                            [
+                                "name" => "chat_id",
+                                "contents" => $chatId,
+                            ],
+                            [
+                                "name" => "photo",
+                                "contents" => fopen($tmp, "r"),
+                            ],
+                            [
+                                "name" => "reply_markup",
+                                "contents" => json_encode([
+                                    "inline_keyboard" => $kb,
+                                ]),
+                            ],
+                        ],
+                    ])
+                    ->getBody()
+                    ->getContents(),
+                1
+            );
+        } finally {
+            unlink($tmp);
+        }
+
+        $relatedMessages[] = $res["result"]["message_id"];
+
+        $tc->setRelatedMessages($relatedMessages);
+        $this->entityManager->persist($tc);
+        $this->entityManager->flush();
+
+        return $this->json([]);
     }
 }
